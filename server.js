@@ -33,45 +33,110 @@ function getLocalIP() {
   return "127.0.0.1";
 }
 
-// ===== API: สมัครสมาชิก =====
+// ===== API: สมัครสมาชิก (User) =====
+const saltRounds = 10;
+
 app.post("/users/register", async (req, res) => {
-  const { email, password, username, role } = req.body;
+  const { username, email, password, role } = req.body;
 
-  if (!email || !password || !username || !role) {
-    return res.status(400).json({ error: "Missing fields" });
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: "All fields are required" });
   }
 
-  try {
-    const hash = await bcrypt.hash(password, 10);
+  // hash password
+  const password_hash = await bcrypt.hash(password, saltRounds);
 
-    db.run(
-      `INSERT INTO users (email, password_hash, username, role) VALUES (?, ?, ?, ?)`,
-      [email, hash, username, role],
-      function (err) {
-        if (err) {
-          return res.status(400).json({ error: "Email already exists or invalid" });
+  // insert user
+  db.run(
+    "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'member')",
+    [username, email, password_hash, role],
+    function (err) {
+      if (err) return res.status(500).json({ error: "Failed to create user" });
+
+      const userId = this.lastID;
+
+      // สร้าง wallet สำหรับ user ใหม่
+      db.run(
+        "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
+        [userId, 500],
+        function (err) {
+          if (err) return res.status(500).json({ error: "Failed to create wallet" });
+
+          res.json({
+            message: "User registered successfully",
+            user: {
+              id: userId,
+              username,
+              email,
+              role,
+            },
+            wallet: {
+              id: this.lastID,
+              balance: 500,
+            },
+          });
         }
-        res.json({ id: this.lastID, email, username, role });
-      }
-    );
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
+      );
+    }
+  );
+});
+
+// ===== API: สมัครสมาชิก (Admin) =====
+
+app.post("/users/register/owner", async (req, res) => {
+  const { username, email, password, role } = req.body;
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: "All fields are required" });
   }
+
+  // hash password
+  const password_hash = await bcrypt.hash(password, saltRounds);
+
+  // insert user admin
+  db.run(
+    "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'owner')",
+    [username, email, password_hash, role],
+    function (err) {
+      if (err) return res.status(500).json({ error: "Failed to create user" });
+
+      const userId = this.lastID;
+
+      // สร้าง wallet สำหรับ admin ใหม่
+      db.run(
+        "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
+        [userId, 500],
+        function (err) {
+          if (err) return res.status(500).json({ error: "Failed to create wallet" });
+
+          res.json({
+            message: "Admin registered successfully",
+            user: {
+              id: userId,
+              username,
+              email,
+              role,
+            },
+            wallet: {
+              id: this.lastID,
+              balance: 500,
+            },
+          });
+        }
+      );
+    }
+  );
 });
 
 // ===== API: login =====
 app.post("/users/login", (req, res) => {
   const { username, password } = req.body;
 
-  db.get(`SELECT * FROM users WHERE username = ?`, [username], async (err, user) => {
-    if (err || !user) {
-      return res.status(401).json({ error: "Invalid username or password" });
-    }
+  db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
+    if (err || !user) return res.status(401).json({ error: "Invalid username or password" });
 
     const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) {
-      return res.status(401).json({ error: "Invalid username or password" });
-    }
+    if (!match) return res.status(401).json({ error: "Invalid username or password" });
 
     const token = jwt.sign(
       { id: user.id, username: user.username, role: user.role },
@@ -79,7 +144,24 @@ app.post("/users/login", (req, res) => {
       { expiresIn: "1h" }
     );
 
-    res.json({ token });
+    // ดึง wallet ของ user
+    db.get("SELECT * FROM wallets WHERE user_id = ?", [user.id], (err, wallet) => {
+      if (err) return res.status(500).json({ error: "Failed to get wallet" });
+
+      res.json({
+        message: "Login successful",
+        token: token,
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: user.role,
+        },
+        wallet: wallet
+          ? { id: wallet.id, balance: wallet.balance }
+          : { id: null, balance: 0 },
+      });
+    });
   });
 });
 
