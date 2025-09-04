@@ -1,4 +1,5 @@
 require("dotenv").config();
+const SECRET_KEY = process.env.SECRET_KEY;
 
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
@@ -8,7 +9,7 @@ const jwt = require("jsonwebtoken");
 const cors = require("cors");
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = 3000;
 const host = "0.0.0.0";
 
 
@@ -206,12 +207,7 @@ app.get("/users", (req, res) => {
 });
 
 // ===== Start Server =====
-// app.listen(port, host, () => {
-//   const ip = getLocalIP();
-//   console.log(`Lotto API running at http://${ip}:${port}`);
-// });
-
- app.listen(port, host, () => {
+app.listen(port, host, () => {
   const ip = getLocalIP();
-  console.log(`Lotto API running at ${port}`);
+  console.log(`Lotto API running at http://${ip}:${port}`);
 });
