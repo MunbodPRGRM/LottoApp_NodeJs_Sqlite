@@ -1,15 +1,45 @@
+require("dotenv").config();
+
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const os = require("os");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const cors = require("cors");
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const host = "0.0.0.0";
-const SECRET_KEY = "supersecretkey"; // ควรย้ายไปเก็บ .env
+
+
+const allowedOrigins = [
+  "http://localhost:5173",   // Flutter Web หรือ Vite Dev server
+  "http://localhost:4200",   // Angular Dev server
+  "http://localhost:3000",   // React CRA Dev server
+  "https://lottoapp.com",    // Production frontend domain
+  "http://192.168.56.1:3000", // ตัวอย่าง IP เครื่องที่ใช้พัฒนา
+  // 👉 ถ้ามี domain อื่นก็ใส่เพิ่มได้
+];
 
 app.use(express.json());
+
+// เปิดใช้ CORS
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // allow no-origin requests (เช่น Postman หรือ curl)
+      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        console.log("CORS blocked:", origin); // log ไว้ debug
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true, // เผื่ออนาคตถ้ามี session/cookie
+  })
+);
 
 // ===== DB Connect =====
 const db = new sqlite3.Database("./lotto_app.db", (err) => {
@@ -176,7 +206,12 @@ app.get("/users", (req, res) => {
 });
 
 // ===== Start Server =====
-app.listen(port, host, () => {
+// app.listen(port, host, () => {
+//   const ip = getLocalIP();
+//   console.log(`Lotto API running at http://${ip}:${port}`);
+// });
+
+ app.listen(port, host, () => {
   const ip = getLocalIP();
-  console.log(`Lotto API running at http://${ip}:${port}`);
+  console.log(`Lotto API running at ${port}`);
 });
