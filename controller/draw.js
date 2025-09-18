@@ -3,76 +3,89 @@ const express = require("express");
 module.exports = (db) => {
   const router = express.Router();
 
-  // ===== Owner: ออกรางวัล =====
-    router.post("/", (req, res) => {
-        const { mode } = req.body; // sold_only | all_numbers
-        let query = "SELECT * FROM lottery_numbers";
-        if (mode === "sold_only") query += " WHERE status = 'sold'";
+  // ฟังก์ชันสุ่มเลข
+  const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
-        db.all(query, [], (err, numbers) => {
-            if (err) return res.status(500).json({ error: err.message });
-            if (numbers.length === 0) return res.status(400).json({ error: "No numbers to draw" });
+  const prizeAmounts = {
+    1: 10000,
+    2: 5000,
+    3: 3000,
+    4: 500,
+    5: 200,
+  };
 
-            // ฟังก์ชันสุ่มเลขจาก tickets
-            const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  // ===== PREVIEW: สุ่มผลรางวัล (ยังไม่บันทึก) =====
+  router.post("/preview", (req, res) => {
+    const { mode } = req.body; // sold_only | all_numbers
+    let query = "SELECT * FROM lottery_numbers";
+    if (mode === "sold_only") query += " WHERE status = 'sold'";
 
-            const prizeAmounts = {
-                1: 10000,
-                2: 5000,
-                3: 3000,
-                4: 500,
-                5: 200,
-            };
+    db.all(query, [], (err, numbers) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (numbers.length === 0) return res.status(400).json({ error: "No numbers to draw" });
 
-            // สุ่มรางวัล
-            const results = {
-                1: pickRandom(numbers).number, // 6 หลัก
-                2: pickRandom(numbers).number,
-                3: pickRandom(numbers).number,
-                4: pickRandom(numbers).number.slice(-3), // เลขท้าย 3 หลัก
-                5: pickRandom(numbers).number.slice(-2), // เลขท้าย 2 หลัก
-            };
+      const results = {
+        1: pickRandom(numbers).number,
+        2: pickRandom(numbers).number,
+        3: pickRandom(numbers).number,
+        4: pickRandom(numbers).number.slice(-3),
+        5: pickRandom(numbers).number.slice(-2),
+      };
 
-            // บันทึก draw
-            db.run("INSERT INTO draws (mode) VALUES (?)", [mode], function (err) {
-            if (err) return res.status(500).json({ error: err.message });
-            const draw_id = this.lastID;
-
-            let prizeResults = [];
-            Object.entries(results).forEach(([rank, prize_number]) => {
-                const prize_amount = prizeAmounts[rank];
-
-                // บันทึกลงตาราง prizes
-                db.run(
-                    "INSERT INTO prizes (draw_id, prize_rank, prize_number, prize_amount) VALUES (?, ?, ?, ?)",
-                    [draw_id, rank, prize_number, prize_amount]
-                );
-
-                // หาผู้ถูกรางวัล (เลขเต็มตรง หรือ เลขท้ายตรง)
-                let winners = [];
-                if (rank <= 3) {
-                    winners = numbers.filter((n) => n.number === prize_number);
-                } else if (rank == 4) {
-                    winners = numbers.filter((n) => n.number.endsWith(prize_number));
-                } else if (rank == 5) {
-                    winners = numbers.filter((n) => n.number.endsWith(prize_number));
-                }
-
-                winners.forEach((winner) => {
-                    db.run(
-                        "INSERT INTO redemptions (lottery_id, draw_id, prize_rank, prize_amount) VALUES (?, ?, ?, ?)",
-                        [winner.id, draw_id, rank, prize_amount]
-                    );
-                });
-
-                prizeResults.push({ prize_rank: rank, prize_number, prize_amount, winners: winners.length });
-            });
-
-            res.json({ message: "Draw completed", draw_id, prizes: prizeResults });
-            });
-        });
+      res.json({ preview: results, prizeAmounts });
     });
+  });
 
+  // ===== CONFIRM: ยืนยันผลรางวัล (บันทึกลง DB) =====
+  router.post("/confirm", (req, res) => {
+    const { mode, results } = req.body;
+    if (!results) return res.status(400).json({ error: "results required" });
+
+    let query = "SELECT * FROM lottery_numbers";
+    if (mode === "sold_only") query += " WHERE status = 'sold'";
+
+    db.all(query, [], (err, numbers) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (numbers.length === 0) return res.status(400).json({ error: "No numbers to draw" });
+
+      // บันทึก draw
+      db.run("INSERT INTO draws (mode) VALUES (?)", [mode], function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        const draw_id = this.lastID;
+
+        let prizeResults = [];
+        Object.entries(results).forEach(([rank, prize_number]) => {
+          const prize_amount = prizeAmounts[rank];
+
+          // บันทึกลงตาราง prizes
+          db.run(
+            "INSERT INTO prizes (draw_id, prize_rank, prize_number, prize_amount) VALUES (?, ?, ?, ?)",
+            [draw_id, rank, prize_number, prize_amount]
+          );
+
+          // หาผู้ถูกรางวัล
+          let winners = [];
+          if (rank <= 3) {
+            winners = numbers.filter((n) => n.number === prize_number);
+          } else {
+            winners = numbers.filter((n) => n.number.endsWith(prize_number));
+          }
+
+          // บันทึกการขึ้นเงิน
+          winners.forEach((winner) => {
+            db.run(
+              "INSERT INTO redemptions (lottery_id, draw_id, prize_rank, prize_amount) VALUES (?, ?, ?, ?)",
+              [winner.id, draw_id, rank, prize_amount]
+            );
+          });
+
+          prizeResults.push({ prize_rank: rank, prize_number, prize_amount, winners: winners.length });
+        });
+
+        res.json({ message: "Draw confirmed", draw_id, prizes: prizeResults });
+      });
+    });
+  });
 
   // ===== ดึงผลออกรางวัลทั้งหมด =====
   router.get("/all", (req, res) => {
@@ -88,9 +101,9 @@ module.exports = (db) => {
       if (err) return res.status(500).json({ error: err.message });
       if (!draw) return res.status(404).json({ error: "No draws found" });
 
-      db.all("SELECT * FROM prizes WHERE draw_id = ?", [draw.id], (err, prizes) => {
+      db.all("SELECT * FROM prizes WHERE draw_id = ? ORDER BY prize_rank ASC", [draw.id], (err, prizes) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ draw, prizes });
+        res.json(prizes);
       });
     });
   });

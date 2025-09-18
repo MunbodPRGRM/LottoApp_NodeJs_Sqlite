@@ -106,35 +106,47 @@ module.exports = (db) => {
   });
 
   // ===== ขึ้นเงินรางวัล =====
-  router.post("/redeem/:user_id/:lottery_id", (req, res) => {
-    const { user_id, lottery_id } = req.params;
+  router.post("/redeem/:user_id", (req, res) => {
+  const { user_id } = req.params;
+  const { lotto_number } = req.body; // รับเลขล็อตเตอรี่จาก JSON
 
-    db.get(
-      `SELECT r.prize_amount 
-       FROM redemptions r
-       JOIN lottery_numbers l ON r.lottery_id = l.id
-       WHERE r.lottery_id = ? AND l.user_id = ?`,
-      [lottery_id, user_id],
-      (err, row) => {
+  if (!lotto_number) return res.status(400).json({ error: "lotto_number is required" });
+
+  db.get(
+    `SELECT r.prize_amount, l.id AS lottery_id
+     FROM redemptions r
+     JOIN lottery_numbers l ON r.lottery_id = l.id
+     WHERE l.number = ? AND l.user_id = ?`,
+    [lotto_number, user_id],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!row) return res.status(400).json({ error: "This ticket did not win any prize" });
+
+      const prizeAmount = row.prize_amount;
+      const lotteryId = row.lottery_id;
+
+      // เพิ่มเงินให้ wallet
+      db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [prizeAmount, user_id], function (err) {
         if (err) return res.status(500).json({ error: err.message });
-        if (!row) return res.status(400).json({ error: "This ticket did not win any prize" });
 
-        const prizeAmount = row.prize_amount;
-        db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [prizeAmount, user_id], function (err) {
+        // ลบเลขล็อตเตอรี่และ redemption
+        db.run(`DELETE FROM lottery_numbers WHERE id = ?`, [lotteryId], (err) => {
           if (err) return res.status(500).json({ error: err.message });
 
-          db.run(`DELETE FROM lottery_numbers WHERE id = ?`, [lottery_id], (err) => {
+          db.run(`DELETE FROM redemptions WHERE lottery_id = ?`, [lotteryId], (err) => {
             if (err) return res.status(500).json({ error: err.message });
 
-            db.run(`DELETE FROM redemptions WHERE lottery_id = ?`, [lottery_id], (err) => {
-              if (err) return res.status(500).json({ error: err.message });
-              res.json({ message: "Prize redeemed successfully. Ticket deleted.", amount: prizeAmount });
+            res.json({
+              message: "Prize redeemed successfully. Ticket deleted.",
+              amount: prizeAmount
             });
           });
         });
-      }
-    );
-  });
+      });
+    }
+  );
+});
+
 
   // ===== Owner: ลบล็อตโต้ทั้งหมด =====
   router.post("/delete-all", (req, res) => {

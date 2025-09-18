@@ -7,6 +7,7 @@ const users = require("./controller/users");
 const lotto = require("./controller/lotto");
 const draw = require("./controller/draw");
 const system = require("./controller/system");
+const wallet = require("./controller/wallet");
 
 const app = express();
 const port = 3000;
@@ -43,6 +44,7 @@ app.use("/users", users(db, bcrypt));
 app.use("/lotto", lotto(db));
 app.use("/draw", draw(db));
 app.use("/system", system(db));
+app.use("/wallet", wallet(db));
 
 // ===== Start Server =====
 app.listen(port, host, () => {
