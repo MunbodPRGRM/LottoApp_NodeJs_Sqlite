@@ -116,6 +116,37 @@ module.exports = (db, bcrypt) => {
     });
   });
 
+  router.post("/reset-password", async (req, res) => {
+    const { name, email, password, confirmPassword } = req.body;
+
+    if (!name || !email || !password || !confirmPassword)
+      return res.status(400).json({ error: "All fields are required" });
+
+    if (password !== confirmPassword)
+      return res.status(400).json({ error: "Passwords do not match" });
+
+    db.get("SELECT * FROM users WHERE email = ?", [email], async (err, user) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!user) return res.status(404).json({ error: "Email not found" });
+
+      try {
+        // hash รหัสผ่านใหม่
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+        db.run(
+          "UPDATE users SET password_hash = ? WHERE id = ?",
+          [hashedPassword, user.id],
+          (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: "Password reset successful" });
+          }
+        );
+      } catch (e) {
+        res.status(500).json({ error: e.message });
+      }
+    });
+  });
+
   // ===== ดึง user ทั้งหมด =====
   router.get("/", (req, res) => {
     db.all("SELECT id, email, username, role FROM users", [], (err, rows) => {
