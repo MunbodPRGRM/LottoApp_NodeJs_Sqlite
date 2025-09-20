@@ -1,18 +1,20 @@
 const express = require("express");
 
 module.exports = (db) => {
-  const router = express.Router();
+  const router = express.Router();  // ใช้ Express Router รวม API เกี่ยวกับ lottery
 
   // ===== ดึงลอตเตอรี่ทั้งหมด =====
   router.get("/", (req, res) => {
+    // SELECT ลอตเตอรี่ทั้งหมดจากตาราง lottery_numbers
     db.all("SELECT * FROM lottery_numbers ORDER BY id ASC", [], (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
+      res.json(rows); // ส่งกลับเป็น JSON array
     });
   });
 
   // ===== ดึงเลขที่ยังไม่ขาย =====
   router.get("/available", (req, res) => {
+    // SELECT เฉพาะที่ status = 'available'
     db.all("SELECT * FROM lottery_numbers WHERE status = 'available'", [], (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json(rows);
@@ -22,6 +24,7 @@ module.exports = (db) => {
   // ===== ดึงเลขทั้งหมดที่ user ซื้อ =====
   router.get("/:user_id", (req, res) => {
     const user_id = req.params.user_id;
+    // แสดงรายการที่ user_id ซื้อไปแล้ว
     db.all(
       "SELECT id, number, price, status FROM lottery_numbers WHERE user_id = ?",
       [user_id],
@@ -38,19 +41,24 @@ module.exports = (db) => {
     if (!user_id || !lottery_id)
       return res.status(400).json({ error: "user_id and lottery_id required" });
 
+    // เช็คว่ามี lottery นี้อยู่จริง
     db.get("SELECT * FROM lottery_numbers WHERE id = ?", [lottery_id], (err, lottery) => {
       if (err || !lottery) return res.status(404).json({ error: "Lottery not found" });
       if (lottery.status !== "available")
         return res.status(400).json({ error: "Lottery already sold" });
 
+      // เช็คว่า user มี wallet และ balance เพียงพอ
       db.get("SELECT * FROM wallets WHERE user_id = ?", [user_id], (err, wallet) => {
         if (err || !wallet) return res.status(404).json({ error: "Wallet not found" });
         if (wallet.balance < lottery.price)
           return res.status(400).json({ error: "Insufficient balance" });
 
         const newBalance = wallet.balance - lottery.price;
+
+        // หักเงินใน wallet
         db.run("UPDATE wallets SET balance = ? WHERE id = ?", [newBalance, wallet.id]);
 
+        // อัพเดทสถานะ lottery เป็น sold และบันทึกว่า user_id คนนี้ซื้อ
         db.run(
           "UPDATE lottery_numbers SET status = 'sold', user_id = ? WHERE id = ?",
           [user_id, lottery_id],
@@ -66,6 +74,7 @@ module.exports = (db) => {
   // ===== ตรวจผลลอตเตอรี่ของ user =====
   router.get("/check/:user_id", (req, res) => {
     const user_id = req.params.user_id;
+    // JOIN ตาราง lottery_numbers และ redemptions เพื่อดูว่ามีรางวัลหรือไม่
     db.all(
       `SELECT l.id AS lottery_id, l.number, l.price, r.prize_rank, r.prize_amount
        FROM lottery_numbers l
@@ -85,19 +94,23 @@ module.exports = (db) => {
     if (!owner_id || !count || !price)
       return res.status(400).json({ error: "owner_id, count, and price required" });
 
+    // ตรวจสอบสิทธิ์ว่าเป็น owner จริง
     db.get("SELECT * FROM users WHERE id = ? AND role = 'owner'", [owner_id], (err, user) => {
       if (err || !user) return res.status(403).json({ error: "Not authorized" });
 
+      // ✅ สุ่มเลขลอตเตอรี่ 6 หลัก ไม่ให้ซ้ำกัน
       const numbers = new Set();
       while (numbers.size < count) {
         const num = Math.floor(100000 + Math.random() * 900000).toString();
         numbers.add(num);
       }
 
+      // ✅ เตรียม insert หลายแถวในคำสั่งเดียว
       const numbersArray = Array.from(numbers);
-      const placeholders = numbersArray.map(() => "(?, ?, 'available')").join(", ");
-      const values = numbersArray.flatMap(num => [num, price]);
+      const placeholders = numbersArray.map(() => "(?, ?, 'available')").join(", ");    // "(?, ?, 'available'), (?, ?, 'available'), ..."
+      const values = numbersArray.flatMap(num => [num, price]);   // [num1, price, num2, price, num3, price, ...]
 
+      // ✅ Insert ลอตเตอรี่ใหม่เข้า DB
       db.run(`INSERT INTO lottery_numbers (number, price, status) VALUES ${placeholders}`, values, function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: "Lotteries created", count: numbersArray.length, numbers: numbersArray });
@@ -107,57 +120,58 @@ module.exports = (db) => {
 
   // ===== ขึ้นเงินรางวัล =====
   router.post("/redeem/:user_id", (req, res) => {
-  const { user_id } = req.params;
-  const { lotto_number } = req.body; // รับเลขล็อตเตอรี่จาก JSON
+    const { user_id } = req.params;
+    const { lotto_number } = req.body; // รับเลขล็อตเตอรี่ที่จะขึ้นเงิน
 
-  if (!lotto_number) return res.status(400).json({ error: "lotto_number is required" });
+    if (!lotto_number) return res.status(400).json({ error: "lotto_number is required" });
 
-  db.get(
-    `SELECT r.prize_amount, l.id AS lottery_id
-     FROM redemptions r
-     JOIN lottery_numbers l ON r.lottery_id = l.id
-     WHERE l.number = ? AND l.user_id = ?`,
-    [lotto_number, user_id],
-    (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!row) return res.status(400).json({ error: "This ticket did not win any prize" });
-
-      const prizeAmount = row.prize_amount;
-      const lotteryId = row.lottery_id;
-
-      // เพิ่มเงินให้ wallet
-      db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [prizeAmount, user_id], function (err) {
+    // หาใน redemptions ว่าเลขนี้ถูกรางวัลไหม
+    db.get(
+      `SELECT r.prize_amount, l.id AS lottery_id
+       FROM redemptions r
+       JOIN lottery_numbers l ON r.lottery_id = l.id
+       WHERE l.number = ? AND l.user_id = ?`,
+      [lotto_number, user_id],
+      (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(400).json({ error: "This ticket did not win any prize" });
 
-        // ลบเลขล็อตเตอรี่และ redemption
-        db.run(`DELETE FROM lottery_numbers WHERE id = ?`, [lotteryId], (err) => {
+        const prizeAmount = row.prize_amount;
+        const lotteryId = row.lottery_id;
+
+        // เพิ่มเงินเข้ากระเป๋า
+        db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [prizeAmount, user_id], function (err) {
           if (err) return res.status(500).json({ error: err.message });
 
-          db.run(`DELETE FROM redemptions WHERE lottery_id = ?`, [lotteryId], (err) => {
+          // ลบตั๋วลอตเตอรี่และบันทึกการถูกรางวัล (ถือว่าขึ้นเงินแล้ว)
+          db.run(`DELETE FROM lottery_numbers WHERE id = ?`, [lotteryId], (err) => {
             if (err) return res.status(500).json({ error: err.message });
 
-            res.json({
-              message: "Prize redeemed successfully. Ticket deleted.",
-              amount: prizeAmount
+            db.run(`DELETE FROM redemptions WHERE lottery_id = ?`, [lotteryId], (err) => {
+              if (err) return res.status(500).json({ error: err.message });
+
+              res.json({
+                message: "Prize redeemed successfully. Ticket deleted.",
+                amount: prizeAmount
+              });
             });
           });
         });
-      });
-    }
-  );
-});
-
+      }
+    );
+  });
 
   // ===== Owner: ลบล็อตโต้ทั้งหมด =====
   router.post("/delete-all", (req, res) => {
     const { owner_id } = req.body;
     if (!owner_id) return res.status(400).json({ error: "owner_id is required" });
 
-    // ตรวจสอบว่าเป็น owner
+    // ตรวจสอบสิทธิ์ว่าเป็น owner จริง
     db.get("SELECT * FROM users WHERE id = ? AND role = 'owner'", [owner_id], (err, user) => {
       if (err) return res.status(500).json({ error: err.message });
       if (!user) return res.status(403).json({ error: "Not authorized" });
 
+      // ลบข้อมูลทั้งหมดที่เกี่ยวข้อง (reset ระบบ)
       db.serialize(() => {
         db.run("DELETE FROM redemptions");
         db.run("DELETE FROM prizes");
@@ -168,5 +182,5 @@ module.exports = (db) => {
     });
   });
 
-  return router;
+  return router; // ส่ง router ออกไปให้ server.js ใช้งาน
 };
