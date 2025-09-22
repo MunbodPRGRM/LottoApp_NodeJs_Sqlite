@@ -27,13 +27,30 @@ module.exports = (db) => {
       if (err) return res.status(500).json({ error: err.message });
       if (numbers.length === 0) return res.status(400).json({ error: "No numbers to draw" });
 
-      // สุ่มหมายเลขรางวัล
+      // ทำสำเนา array ไว้เพื่อใช้สุ่มแบบไม่ซ้ำ
+      let availableNumbers = [...numbers];
+
+      function pickUnique() {
+        const idx = Math.floor(Math.random() * availableNumbers.length);
+        const chosen = availableNumbers[idx];
+        availableNumbers.splice(idx, 1); // ลบออกจาก pool
+        return chosen.number;
+      }
+
+      // รางวัลที่ 1
+      const firstPrize = pickUnique();
+
+      // รางวัลอื่น ๆ (ไม่ซ้ำกัน)
+      const secondPrize = pickUnique();
+      const thirdPrize = pickUnique();
+      const fifthPrize = pickUnique();
+
       const results = {
-        1: pickRandom(numbers).number,          // รางวัลที่ 1 → เลขตรงทั้งหมด
-        2: pickRandom(numbers).number,          // รางวัลที่ 2 → เลขตรงทั้งหมด
-        3: pickRandom(numbers).number,          // รางวัลที่ 3 → เลขตรงทั้งหมด
-        4: pickRandom(numbers).number.slice(-3), // เลขท้าย 3 ตัว
-        5: pickRandom(numbers).number.slice(-2), // เลขท้าย 2 ตัว
+        1: firstPrize,          // รางวัลที่ 1 → เลขตรงทั้งหมด
+        2: secondPrize,         // รางวัลที่ 2 → ไม่ซ้ำกับรางวัลที่ 1
+        3: thirdPrize,          // รางวัลที่ 3 → ไม่ซ้ำ
+        4: firstPrize.slice(-3),// เลขท้าย 3 ตัว → มาจากรางวัลที่ 1
+        5: fifthPrize.slice(-2) // เลขท้าย 2 ตัว → ไม่ซ้ำ
       };
 
       res.json({ preview: results, prizeAmounts });
@@ -53,52 +70,55 @@ module.exports = (db) => {
       if (err) return res.status(500).json({ error: err.message });
       if (numbers.length === 0) return res.status(400).json({ error: "No numbers to draw" });
 
-      // บันทึกการออกรางวัลใหม่ลงตาราง draws
-      db.run("INSERT INTO draws (mode) VALUES (?)", [mode], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        const draw_id = this.lastID; // เก็บค่า id ของงวดล่าสุด
+      // 🔹 ลบรางวัลและการขึ้นเงินเก่าก่อน (ถ้ามี)
+      db.serialize(() => {
+        db.run("DELETE FROM prizes");
+        db.run("DELETE FROM redemptions");
 
-        let prizeResults = [];
+        // บันทึกการออกรางวัลใหม่ลงตาราง draws
+        db.run("INSERT INTO draws (mode) VALUES (?)", [mode], function (err) {
+          if (err) return res.status(500).json({ error: err.message });
+          const draw_id = this.lastID; // เก็บค่า id ของงวดล่าสุด
 
-        // วน loop ทุกลำดับรางวัลที่ได้จาก results
-        Object.entries(results).forEach(([rank, prize_number]) => {
-          const prize_amount = prizeAmounts[rank];
+          let prizeResults = [];
 
-          // บันทึกผลรางวัลลงตาราง prizes
-          db.run(
-            "INSERT INTO prizes (draw_id, prize_rank, prize_number, prize_amount) VALUES (?, ?, ?, ?)",
-            [draw_id, rank, prize_number, prize_amount]
-          );
+          // วน loop ทุกลำดับรางวัลที่ได้จาก results
+          Object.entries(results).forEach(([rank, prize_number]) => {
+            const prize_amount = prizeAmounts[rank];
 
-          // หาผู้ถูกรางวัล
-          let winners = [];
-          if (rank <= 3) {
-            // รางวัล 1, 2, 3 → ต้องตรงทั้งหมด
-            winners = numbers.filter((n) => n.number === prize_number);
-          } else {
-            // รางวัลเลขท้าย → ใช้ endsWith ตรวจสอบ
-            winners = numbers.filter((n) => n.number.endsWith(prize_number));
-          }
-
-          // บันทึกการขึ้นเงินรางวัลลงตาราง redemptions
-          winners.forEach((winner) => {
+            // บันทึกผลรางวัลลงตาราง prizes
             db.run(
-              "INSERT INTO redemptions (lottery_id, draw_id, prize_rank, prize_amount) VALUES (?, ?, ?, ?)",
-              [winner.id, draw_id, rank, prize_amount]
+              "INSERT INTO prizes (draw_id, prize_rank, prize_number, prize_amount) VALUES (?, ?, ?, ?)",
+              [draw_id, rank, prize_number, prize_amount]
             );
+
+            // หาผู้ถูกรางวัล
+            let winners = [];
+            if (rank <= 3) {
+              winners = numbers.filter((n) => n.number === prize_number);
+            } else {
+              winners = numbers.filter((n) => n.number.endsWith(prize_number));
+            }
+
+            // บันทึกการขึ้นเงินรางวัลลงตาราง redemptions
+            winners.forEach((winner) => {
+              db.run(
+                "INSERT INTO redemptions (lottery_id, draw_id, prize_rank, prize_amount) VALUES (?, ?, ?, ?)",
+                [winner.id, draw_id, rank, prize_amount]
+              );
+            });
+
+            prizeResults.push({
+              prize_rank: rank,
+              prize_number,
+              prize_amount,
+              winners: winners.length,
+            });
           });
 
-          // เก็บสรุปผลรางวัล
-          prizeResults.push({
-            prize_rank: rank,
-            prize_number,
-            prize_amount,
-            winners: winners.length, // จำนวนผู้ถูกรางวัล
-          });
+          // ตอบกลับพร้อมรายละเอียดผลรางวัล
+          res.json({ message: "Draw confirmed", draw_id, prizes: prizeResults });
         });
-
-        // ตอบกลับพร้อมรายละเอียดผลรางวัล
-        res.json({ message: "Draw confirmed", draw_id, prizes: prizeResults });
       });
     });
   });

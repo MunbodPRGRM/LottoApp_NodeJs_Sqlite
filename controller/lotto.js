@@ -74,12 +74,14 @@ module.exports = (db) => {
   // ===== ตรวจผลลอตเตอรี่ของ user =====
   router.get("/check/:user_id", (req, res) => {
     const user_id = req.params.user_id;
-    // JOIN ตาราง lottery_numbers และ redemptions เพื่อดูว่ามีรางวัลหรือไม่
+
+    // ดึงรางวัลของผู้ใช้แล้วกรองเลขซ้ำ
     db.all(
       `SELECT l.id AS lottery_id, l.number, l.price, r.prize_rank, r.prize_amount
-       FROM lottery_numbers l
-       JOIN redemptions r ON l.id = r.lottery_id
-       WHERE l.user_id = ?`,
+      FROM lottery_numbers l
+      JOIN redemptions r ON l.id = r.lottery_id
+      WHERE l.user_id = ?
+      GROUP BY l.number`, // <<< เพิ่ม GROUP BY เพื่อตัดเลขซ้ำ
       [user_id],
       (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -121,42 +123,57 @@ module.exports = (db) => {
   // ===== ขึ้นเงินรางวัล =====
   router.post("/redeem/:user_id", (req, res) => {
     const { user_id } = req.params;
-    const { lotto_number } = req.body; // รับเลขล็อตเตอรี่ที่จะขึ้นเงิน
+    const { lotto_number } = req.body;
 
-    if (!lotto_number) return res.status(400).json({ error: "lotto_number is required" });
+    if (!lotto_number)
+      return res.status(400).json({ error: "lotto_number is required" });
 
-    // หาใน redemptions ว่าเลขนี้ถูกรางวัลไหม
-    db.get(
-      `SELECT r.prize_amount, l.id AS lottery_id
-       FROM redemptions r
-       JOIN lottery_numbers l ON r.lottery_id = l.id
-       WHERE l.number = ? AND l.user_id = ?`,
+    // หาเลขที่ถูกรางวัล (อาจถูกรางวัลหลายประเภท)
+    db.all(
+      `SELECT r.prize_amount, r.prize_rank, l.id AS lottery_id
+      FROM redemptions r
+      JOIN lottery_numbers l ON r.lottery_id = l.id
+      WHERE l.number = ? AND l.user_id = ?`,
       [lotto_number, user_id],
-      (err, row) => {
+      (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (!row) return res.status(400).json({ error: "This ticket did not win any prize" });
+        if (!rows || rows.length === 0)
+          return res.status(400).json({ error: "This ticket did not win any prize" });
 
-        const prizeAmount = row.prize_amount;
-        const lotteryId = row.lottery_id;
+        // รวมเงินรางวัลทั้งหมด
+        const totalPrize = rows.reduce((sum, r) => sum + r.prize_amount, 0);
+        const lotteryId = rows[0].lottery_id;
 
-        // เพิ่มเงินเข้ากระเป๋า
-        db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [prizeAmount, user_id], function (err) {
-          if (err) return res.status(500).json({ error: err.message });
+        // รายละเอียดรางวัล
+        const prizes = rows.map(r => ({
+          rank: r.prize_rank,
+          amount: r.prize_amount
+        }));
 
-          // ลบตั๋วลอตเตอรี่และบันทึกการถูกรางวัล (ถือว่าขึ้นเงินแล้ว)
-          db.run(`DELETE FROM lottery_numbers WHERE id = ?`, [lotteryId], (err) => {
+        // อัพเดตเงินเข้ากระเป๋า
+        db.run(
+          `UPDATE wallets SET balance = balance + ? WHERE user_id = ?`,
+          [totalPrize, user_id],
+          function (err) {
             if (err) return res.status(500).json({ error: err.message });
 
-            db.run(`DELETE FROM redemptions WHERE lottery_id = ?`, [lotteryId], (err) => {
+            // ลบตั๋วออก
+            db.run(`DELETE FROM lottery_numbers WHERE id = ?`, [lotteryId], (err) => {
               if (err) return res.status(500).json({ error: err.message });
 
-              res.json({
-                message: "Prize redeemed successfully. Ticket deleted.",
-                amount: prizeAmount
+              // ลบข้อมูลรางวัลที่แลกแล้ว
+              db.run(`DELETE FROM redemptions WHERE lottery_id = ?`, [lotteryId], (err) => {
+                if (err) return res.status(500).json({ error: err.message });
+
+                res.json({
+                  message: "Prize redeemed successfully. Ticket deleted.",
+                  amount: totalPrize,
+                  prizes: prizes
+                });
               });
             });
-          });
-        });
+          }
+        );
       }
     );
   });
