@@ -17,40 +17,40 @@ module.exports = (db) => {
 
   // ===== PREVIEW: สุ่มผลรางวัล (ยังไม่บันทึกลง DB) =====
   router.post("/preview", (req, res) => {
-    const { mode } = req.body; // mode มีค่า "sold_only" หรือ "all_numbers"
+    const { mode } = req.body;
 
-    // query เลือกหมายเลขล็อตเตอรี่ทั้งหมด
     let query = "SELECT * FROM lottery_numbers";
-    if (mode === "sold_only") query += " WHERE status = 'sold'"; // เลือกเฉพาะที่ขายแล้ว
+    if (mode === "sold_only") query += " WHERE status = 'sold'";
 
     db.all(query, [], (err, numbers) => {
       if (err) return res.status(500).json({ error: err.message });
       if (numbers.length === 0) return res.status(400).json({ error: "No numbers to draw" });
 
-      // ทำสำเนา array ไว้เพื่อใช้สุ่มแบบไม่ซ้ำ
+      // ถ้ามีเลขน้อยกว่า 4 → สุ่มรางวัลไม่พอ
+      if (numbers.length < 4) {
+        return res.status(400).json({ error: "Not enough sold tickets to draw" });
+      }
+
       let availableNumbers = [...numbers];
 
       function pickUnique() {
         const idx = Math.floor(Math.random() * availableNumbers.length);
         const chosen = availableNumbers[idx];
-        availableNumbers.splice(idx, 1); // ลบออกจาก pool
+        availableNumbers.splice(idx, 1);
         return chosen.number;
       }
 
-      // รางวัลที่ 1
       const firstPrize = pickUnique();
-
-      // รางวัลอื่น ๆ (ไม่ซ้ำกัน)
       const secondPrize = pickUnique();
       const thirdPrize = pickUnique();
       const fifthPrize = pickUnique();
 
       const results = {
-        1: firstPrize,          // รางวัลที่ 1 → เลขตรงทั้งหมด
-        2: secondPrize,         // รางวัลที่ 2 → ไม่ซ้ำกับรางวัลที่ 1
-        3: thirdPrize,          // รางวัลที่ 3 → ไม่ซ้ำ
-        4: firstPrize.slice(-3),// เลขท้าย 3 ตัว → มาจากรางวัลที่ 1
-        5: fifthPrize.slice(-2) // เลขท้าย 2 ตัว → ไม่ซ้ำ
+        1: firstPrize,
+        2: secondPrize,
+        3: thirdPrize,
+        4: firstPrize.slice(-3),
+        5: fifthPrize.slice(-2),
       };
 
       res.json({ preview: results, prizeAmounts });
