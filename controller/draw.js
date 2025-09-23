@@ -102,6 +102,14 @@ module.exports = (db) => {
 
             // บันทึกการขึ้นเงินรางวัลลงตาราง redemptions
             winners.forEach((winner) => {
+              // ถ้าเป็นรางวัลเลขท้าย แต่หมายเลขนี้ถูกรางวัลที่ 1 ไปแล้ว → ข้าม
+              if (rank >= 4) {
+                const isFirstPrizeWinner = prizeResults.some(
+                  (p) => p.prize_rank == 1 && p.prize_number === winner.number
+                );
+                if (isFirstPrizeWinner) return; // ไม่ insert ซ้ำ
+              }
+
               db.run(
                 "INSERT INTO redemptions (lottery_id, draw_id, prize_rank, prize_amount) VALUES (?, ?, ?, ?)",
                 [winner.id, draw_id, rank, prize_amount]
